@@ -32,6 +32,7 @@ struct train_state  * init_train_state() {
     state->opt = new struct ggml_opt_context;
     state->opt->ctx = NULL;
     state->opt->params = ggml_opt_default_params(GGML_OPT_ADAM);
+    state->opt->params.graph_size = LLAMA_TRAIN_MAX_NODES;
     state->opt->loss_after = 0.0f;
 
     return state;
@@ -236,8 +237,8 @@ int64_t get_example_targets_batch(
     int64_t used_samples = 0;
 
     ggml_set_f32(target_probs, 0.0f);
-    llama_token bos = llama_token_bos(lctx);
-    llama_token eos = llama_token_eos(lctx);
+    llama_token bos = llama_token_bos(llama_get_model(lctx));
+    llama_token eos = llama_token_eos(llama_get_model(lctx));
     // printf("%s: example_id=%d n_batch=%d n_train_samples=%zu\n", __func__, example_id, n_batch, n_train_samples);
     for (int k=0; k<n_batch; ++k) {
         // printf("%s: batch %d\n", __func__, k);
@@ -924,7 +925,7 @@ size_t tokenize_file(
         for (llama_token token=0; token < n_vocab; ++token) {
             max_token_text_size = std::max(
                 max_token_text_size,
-                strlen(llama_token_get_text(lctx, token)));
+                strlen(llama_token_get_text(llama_get_model(lctx), token)));
         }
 
         // upper bound of context byte length.
@@ -1045,6 +1046,7 @@ struct train_params_common get_default_train_params_common() {
     params.n_batch    =    8;
     params.n_gradient_accumulation = 1;
     params.n_epochs   = -1;
+    params.n_gpu_layers = 0;
 
     params.custom_n_ctx = false;
 
@@ -1080,6 +1082,7 @@ struct train_params_common get_default_train_params_common() {
     params.adam_beta2          = 0.999f;
     params.adam_gclip          = 1.0f;
     params.adam_eps_f          = 0.0f;
+
     return params;
 }
 
@@ -1133,6 +1136,7 @@ void print_common_train_usage(int /*argc*/, char ** /*argv*/, const struct train
     fprintf(stderr, "  --adam-beta2 N             AdamW beta2 in interval [0,1). How much to smooth the second moment of gradients. (default %f)\n", params->adam_beta2);
     fprintf(stderr, "  --adam-gclip N             AdamW gradient clipping. Disabled when zero. (default %f)\n", params->adam_gclip);
     fprintf(stderr, "  --adam-epsf N              AdamW epsilon for convergence test. Disabled when <= zero. (default %f)\n", params->adam_eps_f);
+    fprintf(stderr, "  -ngl N, --n-gpu-layers N   Number of model layers to offload to GPU (default %d)", params->n_gpu_layers);
     fprintf(stderr, "\n");
 }
 
@@ -1352,6 +1356,17 @@ bool consume_common_train_arg(
             return true;
         }
         params->adam_gclip = std::stof(argv[i]);
+    } else if (arg == "-ngl" || arg == "--n-gpu-layers") {
+            if (++i >= argc) {
+                *invalid_param = true;
+                return true;
+            }
+#ifdef LLAMA_SUPPORTS_GPU_OFFLOAD
+            params->n_gpu_layers = std::stoi(argv[i]);
+#else
+            fprintf(stderr, "warning: not compiled with GPU offload support, --n-gpu-layers option will be ignored\n");
+            fprintf(stderr, "warning: see main README.md for information on enabling GPU BLAS support\n");
+#endif
     } else if (arg == "-h" || arg == "--help") {
         params->print_usage = true;
         return true;
